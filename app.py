@@ -1,6 +1,6 @@
 """
 🏭 산업안전보건법 AI 상담사
-Streamlit 웹 앱
+Streamlit 웹 앱 (API 키 내장 버전)
 """
 
 import streamlit as st
@@ -20,10 +20,15 @@ st.set_page_config(
 )
 
 # ============================================================
+# 🔐 API 키 설정 (Streamlit Secrets에서 가져옴)
+# ============================================================
+# Streamlit Cloud의 Secrets에 저장된 API 키를 가져옵니다
+# 설정 방법: Streamlit Cloud → 앱 Settings → Secrets
+ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
+
+# ============================================================
 # 세션 상태 초기화
 # ============================================================
-if 'initialized' not in st.session_state:
-    st.session_state.initialized = False
 if 'messages' not in st.session_state:
     st.session_state.messages = []
 
@@ -117,14 +122,14 @@ def search_law(query, collection, embedding_model, n_results=3):
     
     return results
 
-def ask_chatbot(question, collection, embedding_model, api_key):
+def ask_chatbot(question, collection, embedding_model):
     """챗봇 질문-답변"""
     # 관련 조문 검색
     search_results = search_law(question, collection, embedding_model)
     context = "\n\n---\n\n".join(search_results['documents'][0])
     
     # Claude API 호출
-    client = Anthropic(api_key=api_key)
+    client = Anthropic(api_key=ANTHROPIC_API_KEY)
     
     prompt = f"""당신은 산업안전보건법 전문 상담사입니다.
 아래 제공된 법령 조문을 참고하여 질문에 답변해주세요.
@@ -158,91 +163,72 @@ def ask_chatbot(question, collection, embedding_model, api_key):
 st.title("🏭 산업안전보건법 AI 상담사")
 st.markdown("산업안전보건법에 대해 무엇이든 질문하세요!")
 
-# 사이드바 - API 키 입력
+# 사이드바
 with st.sidebar:
-    st.header("⚙️ 설정")
-    api_key = st.text_input("Claude API Key", type="password", help="Anthropic API 키를 입력하세요")
+    st.header("📚 지원 법령")
+    st.markdown("- ✅ 산업안전보건법")
+    st.markdown("- 🔜 화학물질관리법 (준비중)")
+    st.markdown("- 🔜 중대재해처벌법 (준비중)")
     
     st.markdown("---")
-    st.markdown("### 📚 지원 법령")
-    st.markdown("- 산업안전보건법")
-    st.markdown("- *(추후 추가 예정)*")
     
-    st.markdown("---")
-    st.markdown("### ℹ️ 안내")
+    st.header("💡 질문 예시")
     st.markdown("""
-    이 챗봇은 산업안전보건법 조문을 
-    기반으로 답변합니다.
-    
-    **면책조항**: 본 서비스는 참고용이며, 
-    법률적 효력이 없습니다.
+    - 사업주의 안전보건교육 의무는?
+    - 안전관리자 선임 기준은?
+    - 도급인의 안전조치 의무는?
+    - 산업재해 보고 의무는?
     """)
+    
+    st.markdown("---")
+    
+    st.header("ℹ️ 안내")
+    st.markdown("""
+    **면책조항**  
+    본 서비스는 참고용이며, 
+    법률적 효력이 없습니다.
+    정확한 법률 해석은 
+    전문가와 상담하세요.
+    """)
+    
+    st.markdown("---")
+    st.markdown("Made with ❤️ by 힐스")
 
 # 시스템 초기화
-if api_key:
-    with st.spinner("🔄 시스템 초기화 중... (처음 한 번만 시간이 걸립니다)"):
-        # 모델 로드
-        embedding_model = load_embedding_model()
-        
-        # 법령 데이터 로드
-        articles = get_law_articles("276853")
-        
-        # 벡터 DB 구축
-        collection = build_vector_db(embedding_model, articles)
-        
-        st.session_state.initialized = True
-    
-    st.success(f"✅ 준비 완료! 산업안전보건법 {len(articles)}개 조문 로드됨")
-    
-    # 채팅 히스토리 표시
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-    
-    # 사용자 입력
-    if prompt := st.chat_input("질문을 입력하세요..."):
-        # 사용자 메시지 추가
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        # 답변 생성
-        with st.chat_message("assistant"):
-            with st.spinner("🔍 관련 조문 검색 중..."):
-                try:
-                    answer, references = ask_chatbot(
-                        prompt, collection, embedding_model, api_key
-                    )
-                    st.markdown(answer)
-                    
-                    # 참고 조문 표시
-                    with st.expander("📜 참고한 법령 조문 보기"):
-                        for i, ref in enumerate(references, 1):
-                            st.markdown(f"**조문 {i}**")
-                            st.text(ref[:500] + "..." if len(ref) > 500 else ref)
-                            st.markdown("---")
-                    
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
-                    
-                except Exception as e:
-                    st.error(f"오류가 발생했습니다: {str(e)}")
+with st.spinner("🔄 시스템 준비 중..."):
+    embedding_model = load_embedding_model()
+    articles = get_law_articles("276853")
+    collection = build_vector_db(embedding_model, articles)
 
-else:
-    st.warning("👈 왼쪽 사이드바에서 Claude API Key를 입력해주세요.")
+st.success(f"✅ 준비 완료! ({len(articles)}개 조문 로드)")
+
+# 채팅 히스토리 표시
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# 사용자 입력
+if prompt := st.chat_input("질문을 입력하세요..."):
+    # 사용자 메시지 추가
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
     
-    st.markdown("---")
-    st.markdown("### 🚀 시작하기")
-    st.markdown("""
-    1. [Anthropic Console](https://console.anthropic.com/)에서 API 키 발급
-    2. 왼쪽 사이드바에 API 키 입력
-    3. 질문 시작!
-    """)
-    
-    st.markdown("---")
-    st.markdown("### 💡 질문 예시")
-    st.markdown("""
-    - 사업주의 안전보건교육 의무는 무엇인가요?
-    - 안전관리자 선임 기준이 어떻게 되나요?
-    - 도급인의 안전보건 조치 의무는?
-    - 산업재해 발생 시 보고 의무는?
-    """)
+    # 답변 생성
+    with st.chat_message("assistant"):
+        with st.spinner("🔍 관련 조문 검색 중..."):
+            try:
+                answer, references = ask_chatbot(prompt, collection, embedding_model)
+                st.markdown(answer)
+                
+                # 참고 조문 표시
+                with st.expander("📜 참고한 법령 조문 보기"):
+                    for i, ref in enumerate(references, 1):
+                        st.markdown(f"**조문 {i}**")
+                        st.text(ref[:500] + "..." if len(ref) > 500 else ref)
+                        st.markdown("---")
+                
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+                
+            except Exception as e:
+                st.error(f"오류가 발생했습니다: {str(e)}")
