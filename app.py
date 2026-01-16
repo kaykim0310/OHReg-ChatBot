@@ -1,6 +1,6 @@
 """
 🏭 안전환경 법규 AI 상담사
-빠른 로딩 버전 (검색 개선)
+빠른 로딩 버전 (별표 전체 내용 지원)
 """
 
 __import__('pysqlite3')
@@ -78,7 +78,7 @@ def load_data_and_build_db():
         metadata={"hnsw:space": "cosine"}
     )
     
-    # 3. 배치로 추가
+    # 3. 배치로 추가 (검색용 임베딩은 앞부분만, 하지만 인덱스 저장)
     batch_size = 100
     for i in range(0, len(all_data), batch_size):
         batch = all_data[i:i+batch_size]
@@ -90,45 +90,63 @@ def load_data_and_build_db():
                 "type": str(item['type']),
                 "law_name": str(item['law_name']),
                 "number": str(item['number']),
-                "title": str(item.get('title', ''))
-            } for item in batch],
+                "title": str(item.get('title', '')),
+                "idx": str(i+j)  # 원본 인덱스 저장!
+            } for j, item in enumerate(batch)],
             ids=[f"item_{i+j}" for j in range(len(batch))]
         )
     
     return all_data, collection
 
 def search_law(query, collection, embedding_model, n_results=10):
-    """관련 조문/별표 검색 - 결과 수 늘림!"""
+    """관련 조문/별표 검색"""
     query_embedding = embedding_model.encode(query).tolist()
     return collection.query(
         query_embeddings=[query_embedding],
         n_results=n_results
     )
 
-def ask_chatbot(question, collection, embedding_model):
-    # 검색 결과 10개로 늘림
+def get_full_text(all_data, meta, max_len=8000):
+    """원본 데이터에서 전체 텍스트 가져오기"""
+    idx = int(meta.get('idx', -1))
+    if 0 <= idx < len(all_data):
+        full_text = all_data[idx]['full_text']
+        # 너무 긴 경우 제한 (토큰 초과 방지)
+        if len(full_text) > max_len:
+            return full_text[:max_len] + f"\n\n... (전체 {len(full_text)}자 중 {max_len}자만 표시)"
+        return full_text
+    return None
+
+def ask_chatbot(question, collection, embedding_model, all_data):
+    # 검색
     search_results = search_law(question, collection, embedding_model, n_results=10)
     
-    # 조문과 별표 분리해서 골고루 포함
     docs = search_results['documents'][0]
     metas = search_results['metadatas'][0]
     
-    # 컨텍스트 구성 (최대 8개)
-    selected_docs = []
-    selected_metas = []
-    
+    # 조문과 별표 분리
     articles = [(d, m) for d, m in zip(docs, metas) if m['type'] == '조문']
     tables = [(d, m) for d, m in zip(docs, metas) if m['type'] == '별표']
     
-    # 조문 최대 5개, 별표 최대 3개
-    for d, m in articles[:5]:
-        selected_docs.append(d)
-        selected_metas.append(m)
-    for d, m in tables[:3]:
-        selected_docs.append(d)
-        selected_metas.append(m)
+    # 컨텍스트 구성 - 원본 전체 텍스트 사용!
+    context_parts = []
+    selected_metas = []
     
-    context = "\n\n---\n\n".join(selected_docs)
+    # 별표 먼저 (최대 3개, 전체 텍스트)
+    for d, m in tables[:3]:
+        full_text = get_full_text(all_data, m, max_len=8000)
+        if full_text:
+            context_parts.append(full_text)
+            selected_metas.append(m)
+    
+    # 조문 추가 (최대 5개)
+    for d, m in articles[:5]:
+        full_text = get_full_text(all_data, m, max_len=2000)
+        if full_text:
+            context_parts.append(full_text)
+            selected_metas.append(m)
+    
+    context = "\n\n---\n\n".join(context_parts)
     
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
     
@@ -143,23 +161,24 @@ def ask_chatbot(question, collection, embedding_model):
 
 ## 답변 지침:
 1. 반드시 위 자료 내용을 근거로 답변하세요
-2. 출처를 명확히 밝히세요 (예: "산업안전보건법 제29조에 따르면...", "별표 3에 따르면...")
-3. **별표에 구체적인 기준이 있으면 별표 내용을 우선 인용하세요**
-4. 자료에 없는 내용은 "해당 내용은 제공된 자료에서 찾지 못했습니다"라고 답하세요
-5. 쉽고 친절하게 설명하세요
-6. 마지막에 면책조항: "※ 본 답변은 참고용이며, 정확한 법률 해석은 전문가와 상담하시기 바랍니다."
+2. 출처를 명확히 밝히세요 (예: "산업안전보건법 시행규칙 별표 21에 따르면...")
+3. **별표에 목록이나 기준이 있으면 해당 내용을 상세히 인용하세요**
+4. 물질 목록 등을 물어보면 가능한 전체 목록을 제공하세요
+5. 자료에 없는 내용은 "해당 내용은 제공된 자료에서 찾지 못했습니다"라고 답하세요
+6. 쉽고 친절하게 설명하세요
+7. 마지막에 면책조항: "※ 본 답변은 참고용이며, 정확한 법률 해석은 전문가와 상담하시기 바랍니다."
 
 ## 답변:"""
 
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=2000,
+        max_tokens=4000,  # 응답 길이 늘림
         messages=[{"role": "user", "content": prompt}]
     )
     
-    # 반환용 검색 결과 재구성
+    # 반환용 검색 결과
     return_results = {
-        'documents': [selected_docs],
+        'documents': [context_parts],
         'metadatas': [selected_metas]
     }
     
@@ -194,7 +213,7 @@ with st.sidebar:
     st.header("💡 질문 예시")
     st.markdown("""
     - 안전관리자 선임 기준은?
-    - MSDS 작성 방법은?
+    - **작업환경측정대상물질 목록은?**
     - 위험물 저장소 기준은?
     - 안전보건교육 시간은?
     - 과태료 기준이 어떻게 되나요?
@@ -228,14 +247,14 @@ if prompt := st.chat_input("질문을 입력하세요..."):
     with st.chat_message("assistant"):
         with st.spinner("🔍 검색 중..."):
             try:
-                answer, search_results = ask_chatbot(prompt, collection, embedding_model)
+                answer, search_results = ask_chatbot(prompt, collection, embedding_model, all_data)
                 st.markdown(answer)
                 
                 with st.expander("📜 참고 자료 보기"):
                     for doc, meta in zip(search_results['documents'][0], search_results['metadatas'][0]):
                         badge = "📋" if meta['type'] == '조문' else "📊"
                         st.markdown(f"**{badge} {meta['law_name']} {meta['number']}** - {meta['title']}")
-                        st.text(doc[:500] + "..." if len(doc) > 500 else doc)
+                        st.text(doc[:800] + "..." if len(doc) > 800 else doc)
                         st.markdown("---")
                 
                 st.session_state.messages.append({"role": "assistant", "content": answer})
