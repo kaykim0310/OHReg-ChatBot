@@ -1,6 +1,6 @@
 """
 🏭 안전환경 법규 AI 상담사
-하이브리드 검색 버전 (벡터 + 키워드)
+정확한 별표 매핑 버전
 """
 
 __import__('pysqlite3')
@@ -95,56 +95,87 @@ def load_data_and_build_db():
     
     return all_data, collection
 
-def keyword_search(query, all_data, max_results=5):
-    """키워드 기반 검색 - 제목과 내용에서 검색"""
-    results = []
-    query_lower = query.lower()
-    
-    # 핵심 키워드 추출
-    keywords = []
-    if '작업환경측정' in query:
-        keywords.append('작업환경측정')
-    if '안전관리자' in query:
-        keywords.append('안전관리자')
-    if '보건관리자' in query:
-        keywords.append('보건관리자')
-    if '안전보건교육' in query or '교육' in query:
-        keywords.append('안전보건교육')
-    if '과태료' in query:
-        keywords.append('과태료')
-    if '유해인자' in query or '대상물질' in query:
-        keywords.append('유해인자')
-    if 'msds' in query_lower or '물질안전보건자료' in query:
-        keywords.append('물질안전보건자료')
-    if '위험물' in query:
-        keywords.append('위험물')
-    if '특수건강진단' in query or '건강진단' in query:
-        keywords.append('특수건강진단')
-    if '노출기준' in query:
-        keywords.append('노출기준')
-    if '허용기준' in query:
-        keywords.append('허용기준')
-    if '배출허용' in query or '배출기준' in query:
-        keywords.append('배출허용')
-    
-    # 키워드로 검색
+def find_specific_table(all_data, law_name_contains, table_title_contains):
+    """특정 별표 찾기"""
     for idx, item in enumerate(all_data):
-        title = item.get('title', '').lower()
-        text = item['full_text'][:500].lower()
-        
-        for kw in keywords:
-            if kw.lower() in title or kw.lower() in text:
-                results.append({
-                    'idx': idx,
-                    'item': item,
-                    'match': kw
-                })
-                break
+        if item['type'] == '별표':
+            if law_name_contains in item['law_name']:
+                if table_title_contains in item.get('title', ''):
+                    return idx, item
+    return None, None
+
+def smart_search(question, all_data):
+    """질문 분석해서 관련 별표 직접 찾기"""
+    results = []
+    q = question.lower()
     
-    # 별표 우선 정렬
-    results.sort(key=lambda x: (0 if x['item']['type'] == '별표' else 1))
+    # 작업환경측정 대상물질/유해인자
+    if ('작업환경측정' in q and ('대상' in q or '물질' in q or '유해' in q)) or \
+       '측정대상물질' in q or '측정대상유해인자' in q:
+        idx, item = find_specific_table(all_data, '시행규칙', '작업환경측정 대상 유해인자')
+        if item:
+            results.append((idx, item, '작업환경측정 대상 유해인자'))
     
-    return results[:max_results]
+    # 안전관리자/보건관리자 선임 기준
+    if '안전관리자' in q and ('선임' in q or '기준' in q or '인원' in q):
+        idx, item = find_specific_table(all_data, '시행령', '안전관리자를 두어야 하는 사업')
+        if item:
+            results.append((idx, item, '안전관리자 선임'))
+    
+    if '보건관리자' in q and ('선임' in q or '기준' in q or '인원' in q):
+        idx, item = find_specific_table(all_data, '시행령', '보건관리자를 두어야 하는 사업')
+        if item:
+            results.append((idx, item, '보건관리자 선임'))
+    
+    # 안전보건교육 시간
+    if ('안전보건교육' in q or '안전교육' in q or '보건교육' in q) and ('시간' in q or '기준' in q):
+        idx, item = find_specific_table(all_data, '시행규칙', '교육시간')
+        if item:
+            results.append((idx, item, '안전보건교육'))
+    
+    # 과태료
+    if '과태료' in q:
+        idx, item = find_specific_table(all_data, '시행령', '과태료')
+        if item:
+            results.append((idx, item, '과태료'))
+    
+    # 특수건강진단 대상
+    if '특수건강진단' in q and ('대상' in q or '물질' in q or '유해인자' in q):
+        idx, item = find_specific_table(all_data, '시행규칙', '특수건강진단 대상 유해인자')
+        if item:
+            results.append((idx, item, '특수건강진단'))
+    
+    # 관리대상 유해물질
+    if '관리대상' in q and '유해물질' in q:
+        idx, item = find_specific_table(all_data, '안전보건기준', '관리대상 유해물질')
+        if item:
+            results.append((idx, item, '관리대상 유해물질'))
+    
+    # 허용기준 이하 유지 대상
+    if '허용기준' in q and ('이하' in q or '유지' in q or '대상' in q):
+        idx, item = find_specific_table(all_data, '시행령', '허용기준 이하 유지 대상')
+        if item:
+            results.append((idx, item, '허용기준'))
+    
+    # 위험물
+    if '위험물' in q and ('저장' in q or '기준' in q or '시설' in q):
+        for idx, item in enumerate(all_data):
+            if item['type'] == '별표' and '위험물' in item['law_name']:
+                if '저장' in item.get('title', '') or '기준' in item.get('title', ''):
+                    results.append((idx, item, '위험물'))
+                    if len(results) >= 2:
+                        break
+    
+    # 노출기준
+    if '노출기준' in q:
+        for idx, item in enumerate(all_data):
+            if item['type'] == '별표' or item['type'] == '조문':
+                if '노출기준' in item.get('title', '') or '노출기준' in item['law_name']:
+                    results.append((idx, item, '노출기준'))
+                    if len(results) >= 2:
+                        break
+    
+    return results
 
 def search_law(query, collection, embedding_model, n_results=10):
     """벡터 검색"""
@@ -154,7 +185,7 @@ def search_law(query, collection, embedding_model, n_results=10):
         n_results=n_results
     )
 
-def get_full_text(all_data, idx, max_len=8000):
+def get_full_text(all_data, idx, max_len=10000):
     """원본 전체 텍스트 가져오기"""
     if 0 <= idx < len(all_data):
         full_text = all_data[idx]['full_text']
@@ -164,23 +195,21 @@ def get_full_text(all_data, idx, max_len=8000):
     return None
 
 def ask_chatbot(question, collection, embedding_model, all_data):
-    # 1. 키워드 검색 먼저!
-    keyword_results = keyword_search(question, all_data, max_results=3)
+    # 1. 스마트 검색 (질문 분석해서 정확한 별표 찾기)
+    smart_results = smart_search(question, all_data)
     
     # 2. 벡터 검색
     vector_results = search_law(question, collection, embedding_model, n_results=10)
     
-    # 3. 결과 병합 (키워드 결과 우선)
+    # 3. 결과 병합
     context_parts = []
     selected_metas = []
     used_idx = set()
     
-    # 키워드 검색 결과 추가 (별표 전체 텍스트)
-    for r in keyword_results:
-        idx = r['idx']
+    # 스마트 검색 결과 먼저! (정확한 별표)
+    for idx, item, match_type in smart_results:
         if idx not in used_idx:
-            item = r['item']
-            full_text = get_full_text(all_data, idx, max_len=10000)
+            full_text = get_full_text(all_data, idx, max_len=12000)
             if full_text:
                 context_parts.append(full_text)
                 selected_metas.append({
@@ -195,7 +224,7 @@ def ask_chatbot(question, collection, embedding_model, all_data):
     # 벡터 검색 결과 추가
     for doc, meta in zip(vector_results['documents'][0], vector_results['metadatas'][0]):
         idx = int(meta.get('idx', -1))
-        if idx not in used_idx and len(context_parts) < 8:
+        if idx not in used_idx and len(context_parts) < 6:
             max_len = 6000 if meta['type'] == '별표' else 2000
             full_text = get_full_text(all_data, idx, max_len=max_len)
             if full_text:
@@ -220,7 +249,7 @@ def ask_chatbot(question, collection, embedding_model, all_data):
 1. 반드시 위 자료 내용을 근거로 답변하세요
 2. 출처를 명확히 밝히세요 (예: "산업안전보건법 시행규칙 별표 21에 따르면...")
 3. **별표에 목록이나 기준이 있으면 해당 내용을 상세히 인용하세요**
-4. **물질 목록을 물어보면 전체 목록을 빠짐없이 나열하세요**
+4. **물질 목록을 물어보면 전체 목록을 분류별로 빠짐없이 나열하세요**
 5. 자료에 없는 내용은 "해당 내용은 제공된 자료에서 찾지 못했습니다"라고 답하세요
 6. 쉽고 친절하게 설명하세요
 7. 마지막에 면책조항: "※ 본 답변은 참고용이며, 정확한 법률 해석은 전문가와 상담하시기 바랍니다."
@@ -269,9 +298,9 @@ with st.sidebar:
     st.header("💡 질문 예시")
     st.markdown("""
     - 안전관리자 선임 기준은?
-    - **작업환경측정대상물질 목록은?**
-    - 위험물 저장소 기준은?
-    - 안전보건교육 시간은?
+    - **작업환경측정 대상물질 목록은?**
+    - 특수건강진단 대상 유해인자는?
+    - 안전보건교육 시간 기준은?
     - 과태료 기준이 어떻게 되나요?
     """)
     
