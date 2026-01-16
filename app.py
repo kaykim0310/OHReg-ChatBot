@@ -1,16 +1,18 @@
 """
 🏭 안전환경 법규 AI 상담사
-Streamlit 웹 앱 (진짜 최종 완전체 버전)
-
-포함 법령: 25개
-포함 고시: 8개
-총: 33개 법규
+Streamlit 웹 앱 (ChromaDB 수정 버전)
 """
+
+# SQLite 버전 문제 해결
+__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 import streamlit as st
 import requests
 import xml.etree.ElementTree as ET
 import chromadb
+from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 from anthropic import Anthropic
 
@@ -210,37 +212,73 @@ def get_all_data():
     progress_bar.empty()
     return all_data
 
-@st.cache_resource
-def build_vector_db(_embedding_model, all_data):
+def build_vector_db(embedding_model, all_data):
     """벡터 DB 구축"""
-    chroma_client = chromadb.Client()
+    # ChromaDB 클라이언트 설정
+    chroma_client = chromadb.Client(Settings(
+        anonymized_telemetry=False,
+        allow_reset=True
+    ))
     
+    # 기존 컬렉션 삭제 시도
     try:
         chroma_client.delete_collection("osh_law")
     except:
         pass
     
-    collection = chroma_client.create_collection(name="osh_law")
+    # 새 컬렉션 생성
+    collection = chroma_client.create_collection(
+        name="osh_law",
+        metadata={"hnsw:space": "cosine"}
+    )
     
-    for idx, item in enumerate(all_data):
-        text = item['full_text']
+    # 배치로 데이터 추가 (한번에 50개씩)
+    batch_size = 50
+    for i in range(0, len(all_data), batch_size):
+        batch = all_data[i:i+batch_size]
         
-        if len(text) > 2000:
-            text = text[:2000]
+        documents = []
+        embeddings = []
+        metadatas = []
+        ids = []
         
-        embedding = _embedding_model.encode(text).tolist()
+        for idx, item in enumerate(batch):
+            text = item['full_text']
+            
+            # 빈 텍스트 건너뛰기
+            if not text or len(text.strip()) < 10:
+                continue
+            
+            # 텍스트 길이 제한
+            if len(text) > 2000:
+                text = text[:2000]
+            
+            try:
+                embedding = embedding_model.encode(text).tolist()
+                
+                documents.append(text)
+                embeddings.append(embedding)
+                metadatas.append({
+                    "type": str(item['type']),
+                    "law_name": str(item['law_name']),
+                    "number": str(item['number']),
+                    "title": str(item['title']) if item['title'] else ""
+                })
+                ids.append(f"item_{i+idx}")
+            except Exception as e:
+                continue
         
-        collection.add(
-            documents=[text],
-            embeddings=[embedding],
-            metadatas=[{
-                "type": item['type'],
-                "law_name": item['law_name'],
-                "number": item['number'],
-                "title": item['title']
-            }],
-            ids=[f"item_{idx}"]
-        )
+        # 배치 추가
+        if documents:
+            try:
+                collection.add(
+                    documents=documents,
+                    embeddings=embeddings,
+                    metadatas=metadatas,
+                    ids=ids
+                )
+            except Exception as e:
+                pass
     
     return collection
 
